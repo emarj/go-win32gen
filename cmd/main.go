@@ -4,8 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path"
-	"strings"
 
 	"github.com/emarj/gowin32gen"
 )
@@ -34,49 +32,17 @@ func main() {
 
 	filelist := flag.Args()
 
+	generator := gowin32gen.NewGenerator(outputFolder)
+
 	for _, filename := range filelist {
-		err := ProcessFile(filename)
+		err := generator.ParseFile(filename)
 		if err != nil {
 			fmt.Printf("error %q: %s\n", filename, err)
 		}
 	}
-}
 
-func ProcessFile(filename string) error {
-	source, err := os.Open(filename)
+	err := generator.Generate()
 	if err != nil {
-		return err
+		fmt.Println(err)
 	}
-	defer source.Close()
-
-	destname := FilenameTransform(filename)
-	err = os.MkdirAll(path.Dir(destname), 0777)
-	if err != nil {
-		return err
-	}
-
-	dest, err := os.Create(destname)
-	if err != nil {
-		return err
-	}
-	defer dest.Close()
-
-	return gowin32gen.Generate(source, dest)
-
-}
-
-func FilenameTransform(source string) string {
-	pieces := strings.Split(path.Base(source), ".")
-	if len(pieces) == 1 {
-		return source
-	}
-	dest := outputFolder
-
-	for i := 0; i < len(pieces)-1; i++ {
-		dest = path.Join(dest, pieces[i])
-	}
-	dest += ".go"
-
-	return dest
-
 }

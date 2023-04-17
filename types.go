@@ -2,60 +2,70 @@ package gowin32gen
 
 import (
 	"encoding/json"
-	"fmt"
-	"log"
 	"strings"
 )
 
-type ApiFile struct {
+type File struct {
 	Constants      []Constant
-	Types          []Type
-	Functions      []json.RawMessage
+	Types          []Entity
+	Functions      []Function
 	UnicodeAliases []json.RawMessage
 }
 
 const (
-	BaseTypeKindNative    = "Native"
-	BaseTypeKindApiRef    = "ApiRef"
-	BaseTypeKindLPArray   = "LPArray"
-	BaseTypeKindPointerTo = "PointerTo"
+	TypeKindNative    = "Native"
+	TypeKindApiRef    = "ApiRef"
+	TypeKindLPArray   = "LPArray"
+	TypeKindPointerTo = "PointerTo"
 )
 
-func ConvertBaseType(typeName string) (bool, string) {
+func ConvertType(typeName string) (bool, string) {
+	isNative := false
+	outName := typeName
+
 	switch typeName {
 	case "Int8", "Int16", "Int32", "Int64",
-		"UInt8", "UInt16", "UInt32", "UInt64", "Float32", "Float64":
-		return true, strings.ToLower(typeName)
-	default:
-		return false, ""
+		"UInt8", "UInt16", "UInt32", "UInt64", "Byte",
+		"Float32", "Float64",
+		"UIntPtr":
+		isNative = true
+		outName = strings.ToLower(typeName)
+	case "Char":
+		isNative = true
+		outName = "byte"
+	case "IntPtr":
+		//TODO: we implicitly assume x64 arch. Infact this should be int32 in x86
+		isNative = true
+		outName = "int64"
 	}
 
+	return isNative, outName
 }
 
-type BaseType struct {
+type Type struct {
 	Kind string
 	Name *string `json:",omitempty"`
 	// Kind = ApiRef
-	BaseTypeApiRef
+	TypeApiRef
 	// Kind = Array
-	BaseTypeArray
+	TypeArray
 	// Kind = LPArray
-	BaseTypeLPArray
+	TypeLPArray
 	// Kind = PointerTo, LPArray
-	Child *BaseType `json:",omitempty"`
+	Child *Type `json:",omitempty"`
 }
 
-type BaseTypeArray struct {
+type TypeArray struct {
 	Shape *struct{ Size int } `json:",omitempty"`
 }
 
-type BaseTypeApiRef struct {
+type TypeApiRef struct {
 	TargetKind *string  `json:",omitempty"`
 	Api        *string  `json:",omitempty"`
 	Parents    []string `json:",omitempty"`
 }
 
-type BaseTypeLPArray struct {
+type TypeLPArray struct {
 	NullNullTerm    *bool `json:",omitempty"`
 	CountConst      *int  `json:",omitempty"`
 	CountParamIndex *int  `json:",omitempty"`
@@ -63,25 +73,10 @@ type BaseTypeLPArray struct {
 
 type Constant struct {
 	Name      string
-	Type      BaseType
+	Type      Type
 	ValueType string
-	//Value     ConstantValue
-	Value json.RawMessage
-	Attrs []string
-}
-
-func (c Constant) String() string {
-	switch c.Type.Kind {
-	case BaseTypeKindNative:
-		isNative, nativeType := ConvertBaseType(*c.Type.Name)
-		if isNative {
-			return fmt.Sprintf("const %s %s = %s", c.Name, nativeType, c.Value)
-		}
-		log.Printf("WARNING: type %q flagged as native (Ref: %s)\n", *c.Type.Name, c.Name)
-	case BaseTypeKindApiRef:
-		return fmt.Sprintf("var %s %s = %s", c.Name, *c.Type.Name, c.Value)
-	}
-	return ""
+	Value     json.RawMessage
+	Attrs     []string
 }
 
 // This is needed to handle both int values and PKs:
@@ -90,110 +85,71 @@ func (c Constant) String() string {
 type ConstantValue json.RawMessage
 
 const (
-	TypeKindEnum       = "Enum"
-	TypeKindFP         = "FunctionPointer"
-	TypeKindStruct     = "Struct"
-	TypeKindCom        = "Com"
-	TypeKindComClassID = "ComClassID"
+	EntityKindEnum          = "Enum"
+	EntityKindFP            = "FunctionPointer"
+	EntityKindStruct        = "Struct"
+	EntityKindCom           = "Com"
+	EntityKindComClassID    = "ComClassID"
+	EntityKindNativeTypedef = "NativeTypedef"
 )
 
-type Type struct {
+type Entity struct {
 	Name          string
 	Kind          string
 	ValueType     string
 	Architectures []string
 	Platform      *string
 	Guid          *string
-	TypeEnum
-	TypeStruct
-	TypeFunctionPointer
-	TypeCom
+	EntityEnum
+	EntityStruct
+	EntityFunctionPointer
+	EntityCom
+	EntityNativeTypedef
 }
 
-type TypeEnum struct {
-	Flags       bool
-	Values      []EnumValue
+type EntityEnum struct {
+	Flags  bool
+	Values []struct {
+		Name  string
+		Value int
+	}
 	IntegerBase string
 }
 
-type EnumValue struct {
-	Name  string
-	Value int
-}
-
-type TypeStruct struct {
+type EntityStruct struct {
 	Scoped      bool
 	Size        int
 	PackingSize int
-	Fields      []NamedBaseType
-	NestedTypes []Type
+	Fields      []struct {
+		Name  string
+		Type  Type
+		Attrs []string
+	}
+	NestedTypes []Entity
 }
 
-type NamedBaseType struct {
-	Name string
-	Type BaseType
+type EntityNativeTypedef struct {
+	AlsoUsableFor *string
+	Def           *Type
+	FreeFunc      *string
 }
 
-type TypeFunctionPointer struct {
+type EntityFunctionPointer struct {
 	SetLastError bool
 	Params       []FunParam
-	ReturnType   BaseType
+	ReturnType   Type
 	ReturnAttrs  []string
 }
 
-type TypeCom struct {
-	Interface BaseType
-	Methods   []Type
+type EntityCom struct {
+	Interface Type
+	Methods   []Entity
 }
 
 type FunParam struct {
 	Name  string
-	Type  BaseType
+	Type  Type
 	Attrs json.RawMessage
-}
-
-func (t Type) Generate() string {
-
-	if t.Kind != TypeKindCom {
-		return ""
-	}
-
-	w := StringWriter{}
-
-	vtbl := t.Name + "VTable"
-	iface := *t.Interface.Api + "." + *t.Interface.Name
-	ifaceVtable := iface + "VTable"
-
-	w.WriteLine(fmt.Sprintf("type %s struct{", t.Name))
-	w.WriteLine(iface)
-	w.WriteLine("}")
-
-	w.WriteLine(fmt.Sprintf("type %s struct{\n", vtbl))
-	w.WriteLine(ifaceVtable)
-	for _, m := range t.Methods {
-		w.WriteLine(m.Name + " uintptr")
-	}
-	w.WriteLine("}")
-
-	w.WriteString("\n\n")
-
-	w.WriteString(fmt.Sprintf(`
-	func (v *%s) VTable() *%s {
-		return (*%s)(unsafe.Pointer(v.RawVTable))
-	}`, t.Name, vtbl, vtbl))
-
-	w.WriteString("\n\n")
-
-	for _, m := range t.Methods {
-		w.WriteString(fmt.Sprintf(`
-		func (v *%s) %s() %s{
-			
-		}`, t.Name, m.Name, *m.ReturnType.Name))
-		w.WriteString("\n\n")
-	}
-
-	return w.String()
-
 }
 
 type StringWriter struct {
@@ -203,4 +159,12 @@ type StringWriter struct {
 func (w *StringWriter) WriteLine(s string) error {
 	_, err := w.WriteString(s + "\n")
 	return err
+}
+
+type Function struct {
+	Architectures []string
+	Platform      *string
+	Name          string
+	DllImport     string
+	EntityFunctionPointer
 }
